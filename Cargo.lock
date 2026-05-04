@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "nssa_core",
+ "serde",
  "thiserror 1.0.69",
 ]
 

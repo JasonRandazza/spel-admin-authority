@@ -2,6 +2,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::account::{AccountId, AccountWithMetadata, Data};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdminAuthorityError {
@@ -23,7 +24,7 @@ pub enum AdminAuthorityError {
 
 pub type Result<T> = core::result::Result<T, AdminAuthorityError>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum AdminKey {
     Signer(AccountId),
     Pda(AccountId),

@@ -70,11 +70,11 @@ mod admin_authority_sample {
     pub fn transfer_admin(
         #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
-        new_admin: AccountId,
+        new_admin: AdminKey,
     ) -> SpelResult {
         let mut authority = decode_admin(&admin_authority);
         authority
-            .transfer(&admin, AdminKey::Signer(new_admin))
+            .transfer(&admin, new_admin)
             .expect("admin transfer must be authorized");
 
         let mut admin_post = admin_authority.account.clone();

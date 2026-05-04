@@ -31,6 +31,31 @@ fn deploy_sample(state: &mut V03State) {
         .unwrap();
 }
 
+fn initialized_state() -> (V03State, PrivateKey, AccountId) {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_sample(&mut state);
+
+    let admin_key = PrivateKey::try_new([1u8; 32]).unwrap();
+    let admin_id = AccountId::from(&PublicKey::new_from_private_key(&admin_key));
+
+    let msg = Message::try_new(
+        ADMIN_AUTHORITY_SAMPLE_ID,
+        vec![pda("admin_authority"), pda("config"), admin_id],
+        vec![Nonce(0)],
+        Instruction::Initialize { value: 1 },
+    )
+    .unwrap();
+    state
+        .transition_from_public_transaction(
+            &PublicTransaction::new(msg.clone(), WitnessSet::for_message(&msg, &[&admin_key])),
+            1,
+            0,
+        )
+        .unwrap();
+
+    (state, admin_key, admin_id)
+}
+
 #[test]
 fn v03state_initialize_sets_admin_and_config() {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
@@ -68,29 +93,7 @@ fn v03state_initialize_sets_admin_and_config() {
 
 #[test]
 fn v03state_update_config_succeeds_for_admin() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
-    deploy_sample(&mut state);
-
-    let admin_key = PrivateKey::try_new([1u8; 32]).unwrap();
-    let admin_id = AccountId::from(&PublicKey::new_from_private_key(&admin_key));
-
-    let init_msg = Message::try_new(
-        ADMIN_AUTHORITY_SAMPLE_ID,
-        vec![pda("admin_authority"), pda("config"), admin_id],
-        vec![Nonce(0)],
-        Instruction::Initialize { value: 1 },
-    )
-    .unwrap();
-    state
-        .transition_from_public_transaction(
-            &PublicTransaction::new(
-                init_msg.clone(),
-                WitnessSet::for_message(&init_msg, &[&admin_key]),
-            ),
-            1,
-            0,
-        )
-        .unwrap();
+    let (mut state, admin_key, admin_id) = initialized_state();
 
     // Admin nonce is now 1 after the initialize transaction.
     let update_msg = Message::try_new(
@@ -116,4 +119,77 @@ fn v03state_update_config_succeeds_for_admin() {
     )
     .unwrap();
     assert_eq!(config.value, 99);
+}
+
+#[test]
+fn v03state_transfer_admin_updates_authority() {
+    let (mut state, admin_key, admin_id) = initialized_state();
+
+    let new_admin_key = PrivateKey::try_new([2u8; 32]).unwrap();
+    let new_admin_id = AccountId::from(&PublicKey::new_from_private_key(&new_admin_key));
+
+    // Admin nonce is 1 after initialize.
+    let transfer_msg = Message::try_new(
+        ADMIN_AUTHORITY_SAMPLE_ID,
+        vec![pda("admin_authority"), admin_id],
+        vec![Nonce(1)],
+        Instruction::TransferAdmin {
+            new_admin: AdminKey::Signer(new_admin_id),
+        },
+    )
+    .unwrap();
+    state
+        .transition_from_public_transaction(
+            &PublicTransaction::new(
+                transfer_msg.clone(),
+                WitnessSet::for_message(&transfer_msg, &[&admin_key]),
+            ),
+            2,
+            0,
+        )
+        .unwrap();
+
+    let authority = AdminAuthority::decode(
+        state
+            .get_account_by_id(pda("admin_authority"))
+            .data
+            .as_ref(),
+    )
+    .unwrap();
+    assert_eq!(authority.admin, Some(AdminKey::Signer(new_admin_id)));
+    assert!(!authority.revoked);
+}
+
+#[test]
+fn v03state_revoke_admin_blocks_further_updates() {
+    let (mut state, admin_key, admin_id) = initialized_state();
+
+    // Admin nonce is 1 after initialize.
+    let revoke_msg = Message::try_new(
+        ADMIN_AUTHORITY_SAMPLE_ID,
+        vec![pda("admin_authority"), admin_id],
+        vec![Nonce(1)],
+        Instruction::RevokeAdmin,
+    )
+    .unwrap();
+    state
+        .transition_from_public_transaction(
+            &PublicTransaction::new(
+                revoke_msg.clone(),
+                WitnessSet::for_message(&revoke_msg, &[&admin_key]),
+            ),
+            2,
+            0,
+        )
+        .unwrap();
+
+    let authority = AdminAuthority::decode(
+        state
+            .get_account_by_id(pda("admin_authority"))
+            .data
+            .as_ref(),
+    )
+    .unwrap();
+    assert!(authority.revoked);
+    assert_eq!(authority.admin, None);
 }
