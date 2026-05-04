@@ -8,6 +8,8 @@ repository.workspace = true
 [dev-dependencies]
 admin-authority.workspace = true
 admin-authority-sample.workspace = true
+admin-authority-sample-methods.workspace = true
+borsh.workspace = true
 nssa.workspace = true
 nssa_core.workspace = true
 spel-framework.workspace = true

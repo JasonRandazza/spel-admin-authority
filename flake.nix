@@ -25,7 +25,7 @@
 
         checks.fmt = pkgs.runCommand "spel-admin-authority-fmt" { } ''
           cd ${self}
-          find admin-authority admin-authority-sample integration-tests \
+          find admin-authority admin-authority-sample admin-authority-sample-methods integration-tests \
             -name '*.rs' -print0 | xargs -0 ${pkgs.rustfmt}/bin/rustfmt --edition 2024 --check
           touch $out
         '';

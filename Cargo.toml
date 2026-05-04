@@ -2,6 +2,8 @@
 members = [
     "admin-authority",
     "admin-authority-sample",
+    "admin-authority-sample-methods",
+    "admin-authority-sample-methods/guest",
     "integration-tests",
 ]
 resolver = "2"
@@ -14,6 +16,7 @@ repository = "https://github.com/JasonRandazza/spel-admin-authority"
 [workspace.dependencies]
 admin-authority = { path = "admin-authority" }
 admin-authority-sample = { path = "admin-authority-sample" }
+admin-authority-sample-methods = { path = "admin-authority-sample-methods" }
 borsh = { version = "1", features = ["derive"] }
 nssa = { path = "../logos-execution-zone/nssa", features = ["test-utils"] }
 nssa_core = { path = "../logos-execution-zone/nssa/core", features = ["host"] }

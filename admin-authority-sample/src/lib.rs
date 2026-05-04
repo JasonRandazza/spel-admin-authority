@@ -54,8 +54,14 @@ mod admin_authority_sample {
         config_post.data = encode_config(&Config { value });
 
         Ok(SpelOutput::states_only(vec![
-            AccountPostState::new_claimed(admin_post, Claim::Authorized),
-            AccountPostState::new_claimed(config_post, Claim::Authorized),
+            AccountPostState::new_claimed(
+                admin_post,
+                Claim::Pda(PdaSeed::new(seed_from_str("admin_authority"))),
+            ),
+            AccountPostState::new_claimed(
+                config_post,
+                Claim::Pda(PdaSeed::new(seed_from_str("config"))),
+            ),
             AccountPostState::new(admin.account.clone()),
         ]))
     }

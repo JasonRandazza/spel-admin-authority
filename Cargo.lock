@@ -24,6 +24,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "admin-authority-sample-guest"
+version = "0.1.0"
+dependencies = [
+ "admin-authority-sample",
+]
+
+[[package]]
+name = "admin-authority-sample-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1546,6 +1560,8 @@ version = "0.1.0"
 dependencies = [
  "admin-authority",
  "admin-authority-sample",
+ "admin-authority-sample-methods",
+ "borsh",
  "nssa",
  "nssa_core",
  "spel-framework",

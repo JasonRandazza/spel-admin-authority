@@ -21,6 +21,10 @@
 - Generated admin validation assumes the instruction includes an account named `admin_authority` containing Borsh-encoded `AdminAuthority`, and an account annotated `#[account(admin)]` for the active admin signer/PDA.
 - Workspace dependency patching forces SPEL's `nssa_core` dependency to `/home/jrazz/logos-bootcamp/logos-execution-zone/nssa/core`, avoiding duplicate `AccountId`/`AccountWithMetadata` types.
 
+## Dependency Update Notes
+
+- After updating `logos-execution-zone` (commit `f37454ed` "Refactor signatures"), `AccountId::from((program_id, &pda_seed))` was removed in favour of `AccountId::for_public_pda(program_id, &pda_seed)`. The SPEL patch file `spel-framework-core/src/pda.rs:87` was updated accordingly.
+
 ## Local SPEL Patch Files
 
 The new project depends on these local SPEL changes:
@@ -37,13 +41,21 @@ These are not inside the `spel-admin-authority` git repo, so preserve or upstrea
 ## Required Tests
 
 - `cargo check --workspace`: passing.
-- `cargo test --workspace`: passing, 14 tests.
-- `RISC0_DEV_MODE=1 cargo test -p integration-tests`: passing, 3 tests.
+- `cargo test --workspace`: passing, 16 tests.
+- `RISC0_DEV_MODE=1 cargo test -p integration-tests`: passing, 5 tests (3 original + 2 V03State).
 - `cargo fmt --all`: applied successfully; stable rustfmt emits warnings from the parent `rustfmt.toml`.
-- `nix flake check`: passing.
+- `nix flake check`: passing (fmt check covers all four crates including `admin-authority-sample-methods`).
+
+## Integration Tests (V03State)
+
+`integration-tests/tests/v03state.rs` deploys the compiled guest ELF into `V03State` and exercises real transactions end-to-end:
+
+- `v03state_initialize_sets_admin_and_config` — deploys sample program, calls `Initialize { value: 42 }`, asserts `AdminAuthority.admin == Some(AdminKey::Signer(admin_id))` and `Config.value == 42`.
+- `v03state_update_config_succeeds_for_admin` — initialises then calls `UpdateConfig { value: 99 }` with nonce 1, asserts `Config.value == 99`.
+
+Requires `RISC0_DEV_MODE=1` (skips ZK proof generation while still executing the guest ELF).
 
 ## Next Steps
 
 - Keep `HANDOFF.md` updated after each substantial implementation or verification pass.
 - If SPEL upstream accepts the macro patch, replace local path dependency assumptions with the upstream version.
-- Expand integration tests to deploy the sample guest ELF into `V03State` once the project adds packaged RISC Zero guest binaries.
