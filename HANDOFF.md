@@ -152,11 +152,44 @@ In strict order:
    - Updated the sample SPEL `transfer_admin` instruction to include `new_admin_account` and call the checked library transfer.
    - Added unit, LEZ-style, and V03State tests for unsigned signer rejection and deployed PDA acceptance.
 
+10. **Blockchain readiness planning (2026-05-05)**:
+   - Added `DEPLOYMENT.md` as the deployment runbook and evidence template.
+   - Identified `logos-scaffold` as the preferred localnet/deployment wrapper and raw LEZ `wallet deploy-program` as the lower-level deploy path.
+   - Confirmed current gap: deployment is available, but there is no generic raw wallet CLI for arbitrary custom sample instructions. A small host runner/client is needed to submit `Initialize`, `UpdateConfig`, `TransferAdmin`, and `RevokeAdmin` public transactions against a live sequencer.
+   - The user explicitly asked to wait before running the live sample because the session is low on tokens.
+
 ---
+
+## Blockchain Readiness Gates
+
+The repo is green in simulation and CI. To call it fully blockchain ready, complete these gates:
+
+1. **Deployment readiness**
+   - Build the sample guest ELF from a clean checkout.
+   - Deploy it to a scaffold localnet or real Logos devnet.
+   - Record exact deploy command, program id, wallet path, sequencer address, block id, and tx identifier if exposed.
+
+2. **Real transaction flow**
+   - Run the full admin lifecycle against a live sequencer: initialize, admin update, non-admin rejection, transfer to checked signer, old-admin rejection, new-admin success, PDA transfer where appropriate, revoke, post-revoke rejection.
+
+3. **Client/IDL readiness**
+   - Confirm generated SPEL IDL still marks gated accounts with `admin: true`.
+   - Confirm generated client or custom runner handles `AdminCandidate`, especially dual-signature signer transfer.
+
+4. **Security review pass**
+   - Reconfirm transfer-to-default rejection, mismatched candidate rejection, unsigned signer rejection, undeployed PDA rejection, permanent revoke semantics, account-ordering assumptions, and no user-input panics.
+
+5. **Upstream SPEL strategy**
+   - Open an upstream-ready PR to `logos-co/spel` for `#[account(admin)]`, or clearly document the pinned SPEL patch as a vendored dependency until upstream merge.
+
+6. **Release packaging**
+   - Add crate-level docs for `AdminAuthority`, `AdminKey`, and `AdminCandidate`.
+   - Add `CHANGELOG.md`.
+   - Tag a release once live deployment evidence is recorded.
 
 ## Active Work — DO THIS FIRST WHEN RESUMING
 
-There is no known failing code issue at this handoff. Before making new changes, confirm the current working tree and rerun the verification commands below if needed.
+There is no known failing code issue at this handoff. Current blockchain-readiness work is documentation/planning only; do not run the live sample until the user resumes that work. Before making new code changes, confirm the current working tree and rerun the verification commands below if needed.
 
 ```bash
 cargo check --workspace
@@ -179,13 +212,16 @@ The user has authorised commits and pushes for finished, verified work. Suggeste
 
 The user proposed (2026-05-05): "*Maybe we should move on to implementing this on the blockchain even though it has not been fully approved yet.*" — i.e., deploy the program to a real Logos network instead of just V03State simulation.
 
+Current runbook: `DEPLOYMENT.md`.
+
 **Open questions for this goal:**
 1. Is there a public Logos devnet RPC endpoint available, or is this gated behind core-team access?
-2. The user previously said they don't have a node/sequencer running — confirm whether they need one for devnet or whether a hosted endpoint exists.
-3. The deployment tooling (logos-scaffold? lez-cli? a custom client?) needs to be identified — `logos-dev-boost` MCP tools may help here.
-4. Funding/faucet for the deployment account on devnet.
+2. Should the first live run use scaffold-managed localnet or a hosted/devnet endpoint?
+3. Which wallet home should be used for the first run, and is it funded?
+4. Should the host runner live in this repo as a new crate (`admin-authority-client`) or as an example binary in `integration-tests`/sample?
+5. Does the reviewer expect PDA transfer proof against a dedicated initialized admin PDA, or is the initialized `config` PDA acceptance test enough as a framework-level proof?
 
-This goal is **NOT yet started**. Resume from the test verification first, then consult the user before pursuing deployment — premature on-chain work could waste limited devnet resources or expose the project before reviewers see the polished pre-approval state.
+This goal is **started as documentation only**. Resume by creating the host runner/client described in `DEPLOYMENT.md`, then run localnet/devnet only after the user explicitly confirms.
 
 ---
 
