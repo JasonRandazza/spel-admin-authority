@@ -1,4 +1,4 @@
-use admin_authority::{AdminAuthority, AdminKey};
+use admin_authority::{AdminAuthority, AdminCandidate, AdminKey};
 use admin_authority_sample::Instruction;
 use admin_authority_sample_methods::{ADMIN_AUTHORITY_SAMPLE_ELF, ADMIN_AUTHORITY_SAMPLE_ID};
 use borsh::BorshDeserialize;
@@ -131,10 +131,10 @@ fn v03state_transfer_admin_updates_authority() {
     // Admin nonce is 1 after initialize.
     let transfer_msg = Message::try_new(
         ADMIN_AUTHORITY_SAMPLE_ID,
-        vec![pda("admin_authority"), admin_id],
-        vec![Nonce(1)],
+        vec![pda("admin_authority"), admin_id, new_admin_id],
+        vec![Nonce(1), Nonce(0)],
         Instruction::TransferAdmin {
-            new_admin: AdminKey::Signer(new_admin_id),
+            new_admin: AdminCandidate::Signer(new_admin_id),
         },
     )
     .unwrap();
@@ -142,7 +142,7 @@ fn v03state_transfer_admin_updates_authority() {
         .transition_from_public_transaction(
             &PublicTransaction::new(
                 transfer_msg.clone(),
-                WitnessSet::for_message(&transfer_msg, &[&admin_key]),
+                WitnessSet::for_message(&transfer_msg, &[&admin_key, &new_admin_key]),
             ),
             2,
             0,
@@ -179,7 +179,7 @@ fn v03state_transfer_admin_updates_authority() {
     let new_admin_update = Message::try_new(
         ADMIN_AUTHORITY_SAMPLE_ID,
         vec![pda("admin_authority"), pda("config"), new_admin_id],
-        vec![Nonce(0)],
+        vec![Nonce(1)],
         Instruction::UpdateConfig { value: 101 },
     )
     .unwrap();
@@ -258,10 +258,10 @@ fn v03state_transfer_admin_rejects_invalid_new_admin() {
 
     let transfer_msg = Message::try_new(
         ADMIN_AUTHORITY_SAMPLE_ID,
-        vec![pda("admin_authority"), admin_id],
+        vec![pda("admin_authority"), admin_id, AccountId::default()],
         vec![Nonce(1)],
         Instruction::TransferAdmin {
-            new_admin: AdminKey::Signer(AccountId::default()),
+            new_admin: AdminCandidate::Signer(AccountId::default()),
         },
     )
     .unwrap();
@@ -283,5 +283,82 @@ fn v03state_transfer_admin_rejects_invalid_new_admin() {
     )
     .unwrap();
     assert_eq!(authority.admin, Some(AdminKey::Signer(admin_id)));
+    assert!(!authority.revoked);
+}
+
+#[test]
+fn v03state_transfer_admin_rejects_unsigned_new_signer() {
+    let (mut state, admin_key, admin_id) = initialized_state();
+
+    let new_admin_key = PrivateKey::try_new([2u8; 32]).unwrap();
+    let new_admin_id = AccountId::from(&PublicKey::new_from_private_key(&new_admin_key));
+
+    let transfer_msg = Message::try_new(
+        ADMIN_AUTHORITY_SAMPLE_ID,
+        vec![pda("admin_authority"), admin_id, new_admin_id],
+        vec![Nonce(1)],
+        Instruction::TransferAdmin {
+            new_admin: AdminCandidate::Signer(new_admin_id),
+        },
+    )
+    .unwrap();
+    let transfer_result = state.transition_from_public_transaction(
+        &PublicTransaction::new(
+            transfer_msg.clone(),
+            WitnessSet::for_message(&transfer_msg, &[&admin_key]),
+        ),
+        2,
+        0,
+    );
+    assert!(transfer_result.is_err());
+
+    let authority = AdminAuthority::decode(
+        state
+            .get_account_by_id(pda("admin_authority"))
+            .data
+            .as_ref(),
+    )
+    .unwrap();
+    assert_eq!(authority.admin, Some(AdminKey::Signer(admin_id)));
+    assert!(!authority.revoked);
+}
+
+#[test]
+fn v03state_transfer_admin_accepts_deployed_pda() {
+    let (mut state, admin_key, admin_id) = initialized_state();
+    let config_seed = seed_from_str("config");
+    let config_pda = pda("config");
+
+    let transfer_msg = Message::try_new(
+        ADMIN_AUTHORITY_SAMPLE_ID,
+        vec![pda("admin_authority"), admin_id, config_pda],
+        vec![Nonce(1)],
+        Instruction::TransferAdmin {
+            new_admin: AdminCandidate::Pda {
+                program_id: ADMIN_AUTHORITY_SAMPLE_ID,
+                seed: config_seed,
+            },
+        },
+    )
+    .unwrap();
+    state
+        .transition_from_public_transaction(
+            &PublicTransaction::new(
+                transfer_msg.clone(),
+                WitnessSet::for_message(&transfer_msg, &[&admin_key]),
+            ),
+            2,
+            0,
+        )
+        .unwrap();
+
+    let authority = AdminAuthority::decode(
+        state
+            .get_account_by_id(pda("admin_authority"))
+            .data
+            .as_ref(),
+    )
+    .unwrap();
+    assert_eq!(authority.admin, Some(AdminKey::Pda(config_pda)));
     assert!(!authority.revoked);
 }

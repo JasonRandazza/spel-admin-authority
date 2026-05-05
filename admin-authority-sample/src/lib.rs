@@ -1,6 +1,6 @@
 //! Sample SPEL program showing a config PDA gated by admin authority.
 
-use admin_authority::{AdminAuthority, AdminAuthorityError, AdminKey};
+use admin_authority::{AdminAuthority, AdminAuthorityError, AdminCandidate, AdminKey};
 use borsh::{BorshDeserialize, BorshSerialize};
 use spel_framework::prelude::*;
 
@@ -71,16 +71,20 @@ mod admin_authority_sample {
     pub fn transfer_admin(
         #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
-        new_admin: AdminKey,
+        new_admin_account: AccountWithMetadata,
+        new_admin: AdminCandidate,
     ) -> SpelResult {
         let mut authority = decode_admin(&admin_authority, 0)?;
         authority
-            .transfer(&admin, new_admin)
+            .transfer(&admin, new_admin, &new_admin_account)
             .map_err(admin_error_to_spel)?;
 
         admin_authority.account.data = encode_admin(&authority)?;
 
-        Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
+        Ok(SpelOutput::execute(
+            vec![admin_authority, admin, new_admin_account],
+            vec![],
+        ))
     }
 
     #[instruction]
@@ -258,5 +262,50 @@ mod tests {
         let updated =
             Config::try_from_slice(output.post_states[1].account().data.as_ref()).unwrap();
         assert_eq!(updated.value, 99);
+    }
+
+    #[test]
+    fn transfer_admin_handler_requires_new_signer_authorization() {
+        let admin_id = account_id(1);
+        let new_admin_id = account_id(2);
+        let authority = AdminAuthority::new(AdminKey::Signer(admin_id)).unwrap();
+        let admin_authority =
+            account_with(pda("admin_authority"), authority.encode().unwrap(), false);
+        let admin = account_with(admin_id, nssa_core::account::Data::default(), true);
+        let new_admin = account_with(new_admin_id, nssa_core::account::Data::default(), false);
+
+        let err = admin_authority_sample::transfer_admin(
+            admin_authority,
+            admin,
+            new_admin,
+            AdminCandidate::Signer(new_admin_id),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, SpelError::Unauthorized { .. }));
+    }
+
+    #[test]
+    fn transfer_admin_handler_stores_checked_new_signer() {
+        let admin_id = account_id(1);
+        let new_admin_id = account_id(2);
+        let authority = AdminAuthority::new(AdminKey::Signer(admin_id)).unwrap();
+        let admin_authority =
+            account_with(pda("admin_authority"), authority.encode().unwrap(), false);
+        let admin = account_with(admin_id, nssa_core::account::Data::default(), true);
+        let new_admin = account_with(new_admin_id, nssa_core::account::Data::default(), true);
+
+        let output = admin_authority_sample::transfer_admin(
+            admin_authority,
+            admin,
+            new_admin,
+            AdminCandidate::Signer(new_admin_id),
+        )
+        .unwrap();
+        let updated =
+            AdminAuthority::decode(output.post_states[0].account().data.as_ref()).unwrap();
+
+        assert_eq!(updated.admin, Some(AdminKey::Signer(new_admin_id)));
+        assert!(!updated.revoked);
     }
 }

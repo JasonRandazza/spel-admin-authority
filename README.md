@@ -9,6 +9,7 @@ A reusable admin authority library for [Logos Execution Zone](https://github.com
 - Stores a single active admin account id (`Signer` or `Pda`) in an `AdminAuthority` account.
 - Gates any SPEL instruction behind admin authority with one annotation: `#[account(admin)]`.
 - Provides `transfer` and `revoke` helpers that enforce the single-admin invariant and reject default/zero keys.
+- Requires transfer candidates to prove validity at transfer time: signer candidates must authorize the transaction; PDA candidates must be derived from a supplied program id/seed and already initialized.
 - Revocation is permanent — once revoked, no further privileged calls are accepted.
 
 ---
@@ -86,13 +87,14 @@ The generated validator reads `admin_authority`, decodes the `AdminAuthority` st
 Use the `transfer` and `revoke` helpers from `admin-authority`:
 
 ```rust
-use admin_authority::{AdminAuthority, AdminKey};
+use admin_authority::{AdminAuthority, AdminCandidate};
 
 #[instruction]
 pub fn transfer_admin(
     #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
     #[account(admin)] admin: AccountWithMetadata,
-    new_admin: AdminKey, // AdminKey::Signer(id) or AdminKey::Pda(id)
+    new_admin_account: AccountWithMetadata,
+    new_admin: AdminCandidate,
 ) -> SpelResult {
     let mut authority = AdminAuthority::from_account(&admin_authority)
         .map_err(|e| SpelError::DeserializationError {
@@ -100,7 +102,7 @@ pub fn transfer_admin(
             message: format!("admin authority decode failed: {e}"),
         })?;
     authority
-        .transfer(&admin, new_admin)
+        .transfer(&admin, new_admin, &new_admin_account)
         .map_err(|e| SpelError::Unauthorized {
             message: e.to_string(),
         })?;
@@ -110,7 +112,7 @@ pub fn transfer_admin(
             message: format!("admin authority encode failed: {e}"),
         })?;
 
-    Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
+    Ok(SpelOutput::execute(vec![admin_authority, admin, new_admin_account], vec![]))
 }
 
 #[instruction]
@@ -161,7 +163,7 @@ The `admin-authority-sample` crate in this workspace is a complete working examp
 
 - `initialize` — sets up the `admin_authority` PDA and a `config` PDA
 - `update_config` — gated by `#[account(admin)]`; updates `Config.value`
-- `transfer_admin` — transfers authority to a new key (Signer or PDA)
+- `transfer_admin` — transfers authority to a checked new key (Signer or PDA)
 - `revoke_admin` — permanently revokes authority
 
 The `integration-tests` crate compiles the sample to a RISC Zero ELF, deploys it into `V03State`, and runs full end-to-end transactions covering all four instructions.
@@ -181,6 +183,8 @@ Every instruction gated with `#[account(admin)]` requires two additional account
 
 The `AdminAuthority` account itself is 35 bytes on-chain (Borsh encoding of `Option<AdminKey>` + `bool`).
 
+`transfer_admin` also includes the candidate admin account as validation evidence. Signer transfers require the new signer to sign the transfer transaction, adding one signature and nonce for that instruction. PDA transfers require the PDA account plus its program id and 32-byte seed in the instruction data.
+
 ---
 
 ## API reference
@@ -195,7 +199,12 @@ pub struct AdminAuthority {
 
 impl AdminAuthority {
     pub fn new(admin: AdminKey) -> Result<Self>;
-    pub fn transfer(&mut self, current: &AccountWithMetadata, new: AdminKey) -> Result<()>;
+    pub fn transfer(
+        &mut self,
+        current: &AccountWithMetadata,
+        new: AdminCandidate,
+        new_account: &AccountWithMetadata,
+    ) -> Result<()>;
     pub fn revoke(&mut self, current: &AccountWithMetadata) -> Result<()>;
     pub fn assert_admin(&self, authority: &AccountWithMetadata) -> Result<()>;
     pub fn encode(&self) -> Result<Data>;
@@ -213,7 +222,21 @@ pub enum AdminKey {
 }
 ```
 
-`AdminKey::validate()` rejects the default (all-zeros) `AccountId`. A stored signer is proven usable when it later authorizes a gated instruction; a stored PDA is proven usable when the runtime marks that PDA account as authorized.
+`AdminKey` is the stored authority state.
+
+### `AdminCandidate`
+
+```rust
+pub enum AdminCandidate {
+    Signer(AccountId),
+    Pda {
+        program_id: ProgramId,
+        seed: [u8; 32],
+    },
+}
+```
+
+`AdminCandidate` is used during transfers. `Signer` candidates must match the provided candidate account and that account must be marked `is_authorized` by LEZ, which means the transfer transaction carried a valid signature for it. `Pda` candidates are derived from `program_id` and `seed`, must match the provided candidate account, and must already be initialized/claimed by a program.
 
 ### `AdminAuthorityError`
 
@@ -222,6 +245,8 @@ pub enum AdminKey {
 | `Revoked` | Authority was permanently revoked |
 | `MissingAdmin` | No admin set (should not occur outside of revoked state) |
 | `InvalidAdminKey` | Candidate key is the default AccountId |
+| `AdminAccountMismatch` | Candidate account does not match the requested signer/PDA |
+| `UndeployedPda` | Candidate PDA account is still default/unclaimed |
 | `NotAdmin` | Presented account does not match stored admin |
 | `MissingSignature` | Account is not marked `is_authorized` by the LEZ |
 

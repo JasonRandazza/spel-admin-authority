@@ -53,7 +53,7 @@ Three proposals are open against RFP-001 (admin authority library). Anything we 
 
 ### Crates
 
-- **`admin-authority`** — reusable library. Defines `AdminAuthority`, `AdminKey { Signer, Pda }`, `AdminAuthorityError`. Borsh + serde serializable. No SPEL or LEZ-specific code beyond `nssa_core::AccountWithMetadata`.
+- **`admin-authority`** — reusable library. Defines `AdminAuthority`, stored `AdminKey { Signer, Pda }`, transfer-time `AdminCandidate { Signer, Pda { program_id, seed } }`, and `AdminAuthorityError`. Borsh + serde serializable. Uses `nssa_core::AccountWithMetadata` plus `ProgramId`/`PdaSeed` for checked PDA derivation.
 - **`admin-authority-sample`** — sample SPEL program. Demonstrates the full flow (init / transfer / revoke / gated update_config). Uses `#[lez_program]` macro and `#[account(admin)]` annotation.
 - **`admin-authority-sample-methods`** — RISC Zero ELF wrapper. `risc0-build::embed_methods()` produces `ADMIN_AUTHORITY_SAMPLE_ELF: &[u8]` and `ADMIN_AUTHORITY_SAMPLE_ID: [u32; 8]` constants for tests/clients.
 - **`admin-authority-sample-methods/guest`** — explicit workspace member; thin binary wrapper calling `admin_authority_sample::main()`.
@@ -94,7 +94,7 @@ Cross-referenced against the RFP spec at `/home/jrazz/logos-bootcamp/RFP-001-adm
 | Requirement | Type | Implementation | Test |
 |---|---|---|---|
 | Admin set at program initialization | Hard — Functionality | `initialize` instruction in sample | `v03state_initialize_sets_admin_and_config` |
-| Transfer authority to new signer/PDA | Hard — Functionality | `transfer_admin` accepts `AdminKey::Signer \| Pda` | `v03state_transfer_admin_updates_authority` + 4 unit tests |
+| Transfer authority to new signer/PDA | Hard — Functionality | `transfer_admin` accepts `AdminCandidate::Signer \| Pda` plus the candidate account as proof | `v03state_transfer_admin_updates_authority`, `v03state_transfer_admin_accepts_deployed_pda` + unit tests |
 | Revoke (renounce) authority | Hard — Functionality | `revoke_admin` instruction; permanent | `v03state_revoke_admin_blocks_further_updates` + unit |
 | Gated config PDA update | Hard — Functionality | `#[account(admin)]` on `update_config` | `v03state_update_config_succeeds_for_admin` + LEZ-layer reject test |
 | SPEL integration, single annotation | Hard — Usability | `#[account(admin)]` macro patch | `idl_marks_admin_gated_accounts` |
@@ -102,9 +102,9 @@ Cross-referenced against the RFP spec at `/home/jrazz/logos-bootcamp/RFP-001-adm
 | README + step-by-step integration + e2e example | Hard — Supportability | README.md (4-step guide, full code example) | manual review |
 | Transaction size overhead documented | Hard — Performance | README overhead table (+128 / +32 bytes) | — |
 | CI green on default branch | Hard — Supportability | `.github/workflows/ci.yml` (scoped fmt + clippy + test with pinned SPEL/LEZ checkouts) | runs on every push |
-| Every hard req has a test | Hard — Supportability | 22 tests | listed above |
+| Every hard req has a test | Hard — Supportability | 30 tests | listed above |
 | Sample program imports library | Hard — Supportability | `admin-authority-sample` depends on `admin-authority` | — |
-| Valid signer/PDA only | Soft — Reliability | Partially covered: `AdminKey::validate()` rejects default and `#[account(admin)]` proves authorization when the stored key is exercised. Current `transfer_admin` does not prove future signer curve membership or PDA deployment at transfer time from `AccountId` alone. | `transfer_rejects_invalid_new_admin` + V03 invalid-transfer test |
+| Valid signer/PDA only | Soft — Reliability | `AdminCandidate` validates the target at transfer time: signer targets must match an authorized candidate account; PDA targets are derived from program id + seed and must match an initialized/claimed account. | `checked_transfer_to_signer_requires_new_admin_authorization`, `checked_transfer_to_pda_requires_derived_initialized_account`, `v03state_transfer_admin_rejects_unsigned_new_signer`, `v03state_transfer_admin_accepts_deployed_pda` |
 
 ---
 
@@ -112,12 +112,12 @@ Cross-referenced against the RFP spec at `/home/jrazz/logos-bootcamp/RFP-001-adm
 
 | Crate | File | Tests | Type |
 |---|---|---|---|
-| `admin-authority` | `src/lib.rs` (mod tests) | 9 | Unit (core library) |
-| `admin-authority-sample` | `src/lib.rs` (mod tests) | 5 | Unit (SPEL macro + IDL) |
+| `admin-authority` | `src/lib.rs` (mod tests) | 13 | Unit (core library) |
+| `admin-authority-sample` | `src/lib.rs` (mod tests) | 7 | Unit (SPEL macro + IDL) |
 | `integration-tests` | `tests/admin_authority.rs` | 3 | LEZ validator layer |
-| `integration-tests` | `tests/v03state.rs` | 5 | E2E V03State (compiled ELF) |
+| `integration-tests` | `tests/v03state.rs` | 7 | E2E V03State (compiled ELF) |
 
-Total: **22 tests**.
+Total: **30 tests**.
 
 ---
 
@@ -143,7 +143,14 @@ In strict order:
    - Added `v03state_transfer_admin_rejects_invalid_new_admin`, confirming invalid default-key transfer returns an error and leaves authority unchanged.
    - Reworked README examples to use `SpelError`/`?` instead of `.expect()` inside guest handlers and to use non-deprecated `SpelOutput::execute`.
    - Fixed CI reproducibility by checking out pinned SPEL/LEZ siblings, applying `patches/spel-admin-authority.patch`, installing pinned RISC Zero rust/cpp/r0vm components, scoping rustfmt to this repo, and using `RISC0_SKIP_BUILD=1` for clippy.
-   - Corrected documentation that overclaimed on-curve/deployed-PDA validation. That remains the main known enhancement if the RFP reviewer treats the soft reliability item as mandatory.
+   - Corrected documentation that overclaimed on-curve/deployed-PDA validation. That remained the main known enhancement if the RFP reviewer treated the soft reliability item as mandatory.
+
+9. **Checked transfer implementation (2026-05-05)**:
+   - Replaced the primary transfer path with `AdminAuthority::transfer(current_admin, AdminCandidate, candidate_account)`.
+   - Added `AdminCandidate::Signer(AccountId)` proof: the candidate account id must match and `is_authorized` must be true, so LEZ has verified a valid signature for the new signer in the transfer transaction.
+   - Added `AdminCandidate::Pda { program_id, seed }` proof: the PDA id is derived with `AccountId::for_public_pda(program_id, PdaSeed::new(seed))`, must match the provided candidate account, and the account must already be initialized/claimed.
+   - Updated the sample SPEL `transfer_admin` instruction to include `new_admin_account` and call the checked library transfer.
+   - Added unit, LEZ-style, and V03State tests for unsigned signer rejection and deployed PDA acceptance.
 
 ---
 

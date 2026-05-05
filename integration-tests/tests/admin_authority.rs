@@ -1,4 +1,4 @@
-use admin_authority::{AdminAuthority, AdminKey};
+use admin_authority::{AdminAuthority, AdminCandidate, AdminKey};
 use nssa_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use nssa_core::program::ProgramId;
 
@@ -35,7 +35,11 @@ fn lez_style_admin_transfer_allows_new_admin_and_rejects_old_admin() {
 
     let mut authority = AdminAuthority::new(AdminKey::Signer(old_admin.account_id)).unwrap();
     authority
-        .transfer(&old_admin, AdminKey::Signer(new_admin.account_id))
+        .transfer(
+            &old_admin,
+            AdminCandidate::Signer(new_admin.account_id),
+            &new_admin,
+        )
         .unwrap();
 
     assert!(authority.assert_admin(&new_admin).is_ok());

@@ -1,7 +1,10 @@
 //! Reusable admin authority primitives for SPEL/LEZ programs.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::account::{AccountId, AccountWithMetadata, Data};
+use nssa_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data},
+    program::{DEFAULT_PROGRAM_ID, PdaSeed, ProgramId},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -12,6 +15,10 @@ pub enum AdminAuthorityError {
     MissingAdmin,
     #[error("candidate admin key must be non-default")]
     InvalidAdminKey,
+    #[error("candidate admin account does not match requested admin key")]
+    AdminAccountMismatch,
+    #[error("candidate admin PDA is not initialized")]
+    UndeployedPda,
     #[error("account is not the current admin")]
     NotAdmin,
     #[error("admin signer authorization is missing")]
@@ -47,6 +54,53 @@ impl AdminKey {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
+pub enum AdminCandidate {
+    Signer(AccountId),
+    Pda {
+        program_id: ProgramId,
+        seed: [u8; 32],
+    },
+}
+
+impl AdminCandidate {
+    pub fn to_admin_key(self) -> Result<AdminKey> {
+        match self {
+            Self::Signer(id) => AdminKey::Signer(id).validate(),
+            Self::Pda { program_id, seed } => {
+                let id = AccountId::for_public_pda(&program_id, &PdaSeed::new(seed));
+                AdminKey::Pda(id).validate()
+            }
+        }
+    }
+
+    pub fn validate_with_account(self, account: &AccountWithMetadata) -> Result<AdminKey> {
+        let key = self.to_admin_key()?;
+        if account.account_id != key.account_id() {
+            return Err(AdminAuthorityError::AdminAccountMismatch);
+        }
+
+        match self {
+            Self::Signer(_) => {
+                if !account.is_authorized {
+                    return Err(AdminAuthorityError::MissingSignature);
+                }
+            }
+            Self::Pda { .. } => {
+                if account.account == Account::default()
+                    || account.account.program_owner == DEFAULT_PROGRAM_ID
+                {
+                    return Err(AdminAuthorityError::UndeployedPda);
+                }
+            }
+        }
+
+        Ok(key)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AdminAuthority {
     pub admin: Option<AdminKey>,
@@ -64,10 +118,11 @@ impl AdminAuthority {
     pub fn transfer(
         &mut self,
         current_admin: &AccountWithMetadata,
-        new_admin: AdminKey,
+        new_admin: AdminCandidate,
+        new_admin_account: &AccountWithMetadata,
     ) -> Result<()> {
         self.assert_admin(current_admin)?;
-        self.admin = Some(new_admin.validate()?);
+        self.admin = Some(new_admin.validate_with_account(new_admin_account)?);
         Ok(())
     }
 
@@ -130,6 +185,19 @@ mod tests {
         }
     }
 
+    fn initialized_account(id: AccountId, authorized: bool) -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: [42; 8],
+                balance: 0,
+                data: Data::default(),
+                nonce: Nonce(0),
+            },
+            is_authorized: authorized,
+            account_id: id,
+        }
+    }
+
     #[test]
     fn initialization_stores_exactly_one_admin() {
         let authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
@@ -140,9 +208,10 @@ mod tests {
     #[test]
     fn transfer_succeeds_for_current_admin() {
         let current = account(id(1), true);
+        let new_admin = account(id(2), true);
         let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
         authority
-            .transfer(&current, AdminKey::Signer(id(2)))
+            .transfer(&current, AdminCandidate::Signer(id(2)), &new_admin)
             .unwrap();
         assert_eq!(authority.admin, Some(AdminKey::Signer(id(2))));
     }
@@ -150,9 +219,10 @@ mod tests {
     #[test]
     fn transfer_rejects_non_admin() {
         let current = account(id(9), true);
+        let new_admin = account(id(2), true);
         let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
         let err = authority
-            .transfer(&current, AdminKey::Signer(id(2)))
+            .transfer(&current, AdminCandidate::Signer(id(2)), &new_admin)
             .unwrap_err();
         assert_eq!(err, AdminAuthorityError::NotAdmin);
     }
@@ -160,9 +230,14 @@ mod tests {
     #[test]
     fn transfer_rejects_invalid_new_admin() {
         let current = account(id(1), true);
+        let new_admin = account(AccountId::default(), true);
         let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
         let err = authority
-            .transfer(&current, AdminKey::Signer(AccountId::default()))
+            .transfer(
+                &current,
+                AdminCandidate::Signer(AccountId::default()),
+                &new_admin,
+            )
             .unwrap_err();
         assert_eq!(err, AdminAuthorityError::InvalidAdminKey);
     }
@@ -202,9 +277,88 @@ mod tests {
     #[test]
     fn transfer_to_pda_variant_succeeds() {
         let current = account(id(1), true);
+        let program_id = [42; 8];
+        let seed = [5; 32];
+        let pda_id = AccountId::for_public_pda(&program_id, &PdaSeed::new(seed));
+        let pda_account = initialized_account(pda_id, false);
         let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
-        authority.transfer(&current, AdminKey::Pda(id(5))).unwrap();
-        assert_eq!(authority.admin, Some(AdminKey::Pda(id(5))));
+        authority
+            .transfer(
+                &current,
+                AdminCandidate::Pda { program_id, seed },
+                &pda_account,
+            )
+            .unwrap();
+        assert_eq!(authority.admin, Some(AdminKey::Pda(pda_id)));
+    }
+
+    #[test]
+    fn checked_transfer_to_signer_requires_new_admin_authorization() {
+        let current = account(id(1), true);
+        let new_admin = account(id(2), false);
+        let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
+
+        let err = authority
+            .transfer(&current, AdminCandidate::Signer(id(2)), &new_admin)
+            .unwrap_err();
+
+        assert_eq!(err, AdminAuthorityError::MissingSignature);
+        assert_eq!(authority.admin, Some(AdminKey::Signer(id(1))));
+    }
+
+    #[test]
+    fn checked_transfer_rejects_mismatched_candidate_account() {
+        let current = account(id(1), true);
+        let new_admin = account(id(9), true);
+        let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
+
+        let err = authority
+            .transfer(&current, AdminCandidate::Signer(id(2)), &new_admin)
+            .unwrap_err();
+
+        assert_eq!(err, AdminAuthorityError::AdminAccountMismatch);
+        assert_eq!(authority.admin, Some(AdminKey::Signer(id(1))));
+    }
+
+    #[test]
+    fn checked_transfer_to_pda_requires_derived_initialized_account() {
+        let current = account(id(1), true);
+        let program_id = [42; 8];
+        let seed = [7; 32];
+        let pda_id = AccountId::for_public_pda(&program_id, &PdaSeed::new(seed));
+        let pda_account = initialized_account(pda_id, false);
+        let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
+
+        authority
+            .transfer(
+                &current,
+                AdminCandidate::Pda { program_id, seed },
+                &pda_account,
+            )
+            .unwrap();
+
+        assert_eq!(authority.admin, Some(AdminKey::Pda(pda_id)));
+    }
+
+    #[test]
+    fn checked_transfer_rejects_undeployed_pda() {
+        let current = account(id(1), true);
+        let program_id = [42; 8];
+        let seed = [7; 32];
+        let pda_id = AccountId::for_public_pda(&program_id, &PdaSeed::new(seed));
+        let pda_account = account(pda_id, false);
+        let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
+
+        let err = authority
+            .transfer(
+                &current,
+                AdminCandidate::Pda { program_id, seed },
+                &pda_account,
+            )
+            .unwrap_err();
+
+        assert_eq!(err, AdminAuthorityError::UndeployedPda);
+        assert_eq!(authority.admin, Some(AdminKey::Signer(id(1))));
     }
 
     #[test]
