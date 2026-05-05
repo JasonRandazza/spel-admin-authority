@@ -24,7 +24,9 @@ pub enum AdminAuthorityError {
 
 pub type Result<T> = core::result::Result<T, AdminAuthorityError>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum AdminKey {
     Signer(AccountId),
     Pda(AccountId),
@@ -81,27 +83,14 @@ impl AdminAuthority {
             return Err(AdminAuthorityError::Revoked);
         }
 
-        match self.admin {
-            Some(AdminKey::Signer(expected)) => {
-                if authority.account_id != expected {
-                    return Err(AdminAuthorityError::NotAdmin);
-                }
-                if !authority.is_authorized {
-                    return Err(AdminAuthorityError::MissingSignature);
-                }
-                Ok(())
-            }
-            Some(AdminKey::Pda(expected)) => {
-                if authority.account_id != expected {
-                    return Err(AdminAuthorityError::NotAdmin);
-                }
-                if !authority.is_authorized {
-                    return Err(AdminAuthorityError::MissingSignature);
-                }
-                Ok(())
-            }
-            None => Err(AdminAuthorityError::MissingAdmin),
+        let expected = self.admin.ok_or(AdminAuthorityError::MissingAdmin)?;
+        if authority.account_id != expected.account_id() {
+            return Err(AdminAuthorityError::NotAdmin);
         }
+        if !authority.is_authorized {
+            return Err(AdminAuthorityError::MissingSignature);
+        }
+        Ok(())
     }
 
     pub fn encode(&self) -> Result<Data> {
@@ -189,6 +178,33 @@ mod tests {
             authority.assert_admin(&current).unwrap_err(),
             AdminAuthorityError::Revoked
         );
+    }
+
+    #[test]
+    fn assert_admin_accepts_pda_variant() {
+        let pda_id = id(7);
+        let pda_account = account(pda_id, true);
+        let authority = AdminAuthority::new(AdminKey::Pda(pda_id)).unwrap();
+        assert!(authority.assert_admin(&pda_account).is_ok());
+    }
+
+    #[test]
+    fn assert_admin_rejects_pda_without_authorization() {
+        let pda_id = id(7);
+        let pda_account = account(pda_id, false);
+        let authority = AdminAuthority::new(AdminKey::Pda(pda_id)).unwrap();
+        assert_eq!(
+            authority.assert_admin(&pda_account).unwrap_err(),
+            AdminAuthorityError::MissingSignature
+        );
+    }
+
+    #[test]
+    fn transfer_to_pda_variant_succeeds() {
+        let current = account(id(1), true);
+        let mut authority = AdminAuthority::new(AdminKey::Signer(id(1))).unwrap();
+        authority.transfer(&current, AdminKey::Pda(id(5))).unwrap();
+        assert_eq!(authority.admin, Some(AdminKey::Pda(id(5))));
     }
 
     #[test]

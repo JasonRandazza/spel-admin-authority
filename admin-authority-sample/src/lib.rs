@@ -2,7 +2,7 @@
 
 #![allow(dead_code, deprecated, unused_imports, unused_variables)]
 
-use admin_authority::{AdminAuthority, AdminKey};
+use admin_authority::{AdminAuthority, AdminAuthorityError, AdminKey};
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::account::AccountId;
 use spel_framework::prelude::*;
@@ -13,23 +13,37 @@ pub struct Config {
     pub value: u64,
 }
 
-fn encode_admin(authority: &AdminAuthority) -> nssa_core::account::Data {
+fn encode_admin(authority: &AdminAuthority) -> Result<nssa_core::account::Data, SpelError> {
     authority
         .encode()
-        .expect("admin authority must fit in account data")
+        .map_err(|e| SpelError::SerializationError {
+            message: format!("admin authority encode failed: {e}"),
+        })
 }
 
-fn decode_admin(account: &AccountWithMetadata) -> AdminAuthority {
-    AdminAuthority::from_account(account).expect("admin authority state must decode")
+fn decode_admin(
+    account: &AccountWithMetadata,
+    account_index: usize,
+) -> Result<AdminAuthority, SpelError> {
+    AdminAuthority::from_account(account).map_err(|e| SpelError::DeserializationError {
+        account_index,
+        message: format!("admin authority decode failed: {e}"),
+    })
 }
 
-fn encode_config(config: &Config) -> nssa_core::account::Data {
-    nssa_core::account::Data::try_from(borsh::to_vec(config).expect("config must serialize"))
-        .expect("config must fit in account data")
+fn encode_config(config: &Config) -> Result<nssa_core::account::Data, SpelError> {
+    let bytes = borsh::to_vec(config).map_err(|e| SpelError::SerializationError {
+        message: format!("config encode failed: {e}"),
+    })?;
+    nssa_core::account::Data::try_from(bytes).map_err(|_| SpelError::SerializationError {
+        message: "config exceeds account data size".to_string(),
+    })
 }
 
-fn decode_config(account: &AccountWithMetadata) -> Config {
-    Config::try_from_slice(account.account.data.as_ref()).expect("config state must decode")
+fn admin_error_to_spel(err: AdminAuthorityError) -> SpelError {
+    SpelError::Unauthorized {
+        message: err.to_string(),
+    }
 }
 
 #[lez_program]
@@ -44,14 +58,14 @@ mod admin_authority_sample {
         #[account(signer)] admin: AccountWithMetadata,
         value: u64,
     ) -> SpelResult {
+        let authority =
+            AdminAuthority::new(AdminKey::Signer(admin.account_id)).map_err(admin_error_to_spel)?;
+
         let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(
-            &AdminAuthority::new(AdminKey::Signer(admin.account_id))
-                .expect("initial admin key must be valid"),
-        );
+        admin_post.data = encode_admin(&authority)?;
 
         let mut config_post = config.account.clone();
-        config_post.data = encode_config(&Config { value });
+        config_post.data = encode_config(&Config { value })?;
 
         Ok(SpelOutput::states_only(vec![
             AccountPostState::new_claimed(
@@ -72,13 +86,13 @@ mod admin_authority_sample {
         #[account(admin)] admin: AccountWithMetadata,
         new_admin: AdminKey,
     ) -> SpelResult {
-        let mut authority = decode_admin(&admin_authority);
+        let mut authority = decode_admin(&admin_authority, 0)?;
         authority
             .transfer(&admin, new_admin)
-            .expect("admin transfer must be authorized");
+            .map_err(admin_error_to_spel)?;
 
         let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(&authority);
+        admin_post.data = encode_admin(&authority)?;
 
         Ok(SpelOutput::states_only(vec![
             AccountPostState::new(admin_post),
@@ -91,13 +105,11 @@ mod admin_authority_sample {
         #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
     ) -> SpelResult {
-        let mut authority = decode_admin(&admin_authority);
-        authority
-            .revoke(&admin)
-            .expect("admin revoke must be authorized");
+        let mut authority = decode_admin(&admin_authority, 0)?;
+        authority.revoke(&admin).map_err(admin_error_to_spel)?;
 
         let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(&authority);
+        admin_post.data = encode_admin(&authority)?;
 
         Ok(SpelOutput::states_only(vec![
             AccountPostState::new(admin_post),
@@ -113,7 +125,7 @@ mod admin_authority_sample {
         value: u64,
     ) -> SpelResult {
         let mut config_post = config.account.clone();
-        config_post.data = encode_config(&Config { value });
+        config_post.data = encode_config(&Config { value })?;
 
         Ok(SpelOutput::states_only(vec![
             AccountPostState::new(admin_authority.account.clone()),
@@ -188,7 +200,11 @@ mod tests {
         let authority = AdminAuthority::new(AdminKey::Signer(admin_id)).unwrap();
         let accounts = vec![
             account_with(pda("admin_authority"), authority.encode().unwrap(), false),
-            account_with(pda("config"), encode_config(&Config { value: 1 }), false),
+            account_with(
+                pda("config"),
+                encode_config(&Config { value: 1 }).unwrap(),
+                false,
+            ),
             account_with(admin_id, nssa_core::account::Data::default(), true),
         ];
 
@@ -205,7 +221,11 @@ mod tests {
         let authority = AdminAuthority::new(AdminKey::Signer(account_id(1))).unwrap();
         let accounts = vec![
             account_with(pda("admin_authority"), authority.encode().unwrap(), false),
-            account_with(pda("config"), encode_config(&Config { value: 1 }), false),
+            account_with(
+                pda("config"),
+                encode_config(&Config { value: 1 }).unwrap(),
+                false,
+            ),
             account_with(account_id(9), nssa_core::account::Data::default(), true),
         ];
 
@@ -226,7 +246,11 @@ mod tests {
 
         let accounts = vec![
             account_with(pda("admin_authority"), authority.encode().unwrap(), false),
-            account_with(pda("config"), encode_config(&Config { value: 1 }), false),
+            account_with(
+                pda("config"),
+                encode_config(&Config { value: 1 }).unwrap(),
+                false,
+            ),
             admin,
         ];
 
@@ -245,7 +269,11 @@ mod tests {
         let authority = AdminAuthority::new(AdminKey::Signer(admin_id)).unwrap();
         let admin_authority =
             account_with(pda("admin_authority"), authority.encode().unwrap(), false);
-        let config = account_with(pda("config"), encode_config(&Config { value: 1 }), false);
+        let config = account_with(
+            pda("config"),
+            encode_config(&Config { value: 1 }).unwrap(),
+            false,
+        );
         let admin = account_with(admin_id, nssa_core::account::Data::default(), true);
 
         let output =
