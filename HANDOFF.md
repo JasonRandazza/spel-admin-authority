@@ -142,7 +142,7 @@ In strict order:
    - Strengthened `v03state_revoke_admin_blocks_further_updates` so it actually submits a post-revoke `update_config` and expects rejection.
    - Added `v03state_transfer_admin_rejects_invalid_new_admin`, confirming invalid default-key transfer returns an error and leaves authority unchanged.
    - Reworked README examples to use `SpelError`/`?` instead of `.expect()` inside guest handlers and to use non-deprecated `SpelOutput::execute`.
-   - Fixed CI reproducibility by checking out pinned SPEL/LEZ siblings, applying `patches/spel-admin-authority.patch`, scoping rustfmt to this repo, and using `RISC0_SKIP_BUILD=1` for clippy.
+   - Fixed CI reproducibility by checking out pinned SPEL/LEZ siblings, applying `patches/spel-admin-authority.patch`, installing pinned RISC Zero rust/cpp toolchains, scoping rustfmt to this repo, and using `RISC0_SKIP_BUILD=1` for clippy.
    - Corrected documentation that overclaimed on-curve/deployed-PDA validation. That remains the main known enhancement if the RFP reviewer treats the soft reliability item as mandatory.
 
 ---

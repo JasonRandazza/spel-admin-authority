@@ -51,9 +51,23 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.risc0
             spel-admin-authority/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install RISC Zero toolchain
+        run: |
+          if [ ! -x "$HOME/.risc0/bin/rzup" ]; then
+            curl -L https://risczero.com/install | bash
+          fi
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+          if [ ! -x "$HOME/.risc0/toolchains/v1.94.1-rust-x86_64-unknown-linux-gnu/bin/rustc" ]; then
+            "$HOME/.risc0/bin/rzup" install rust 1.94.1
+          fi
+          if [ ! -x "$HOME/.risc0/toolchains/v2024.1.5-cpp-x86_64-unknown-linux-gnu/riscv32im-linux-x86_64/bin/riscv32-unknown-elf-gcc" ]; then
+            "$HOME/.risc0/bin/rzup" install cpp 2024.1.5
+          fi
 
       - name: Check formatting
         run: |
