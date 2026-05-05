@@ -1,10 +1,7 @@
 //! Sample SPEL program showing a config PDA gated by admin authority.
 
-#![allow(dead_code, deprecated, unused_imports, unused_variables)]
-
 use admin_authority::{AdminAuthority, AdminAuthorityError, AdminKey};
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::account::AccountId;
 use spel_framework::prelude::*;
 
 #[account_type]
@@ -53,36 +50,26 @@ mod admin_authority_sample {
 
     #[instruction]
     pub fn initialize(
-        #[account(init, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
-        #[account(init, pda = literal("config"))] config: AccountWithMetadata,
+        #[account(init, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
+        #[account(init, pda = literal("config"))] mut config: AccountWithMetadata,
         #[account(signer)] admin: AccountWithMetadata,
         value: u64,
     ) -> SpelResult {
         let authority =
             AdminAuthority::new(AdminKey::Signer(admin.account_id)).map_err(admin_error_to_spel)?;
 
-        let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(&authority)?;
+        admin_authority.account.data = encode_admin(&authority)?;
+        config.account.data = encode_config(&Config { value })?;
 
-        let mut config_post = config.account.clone();
-        config_post.data = encode_config(&Config { value })?;
-
-        Ok(SpelOutput::states_only(vec![
-            AccountPostState::new_claimed(
-                admin_post,
-                Claim::Pda(PdaSeed::new(seed_from_str("admin_authority"))),
-            ),
-            AccountPostState::new_claimed(
-                config_post,
-                Claim::Pda(PdaSeed::new(seed_from_str("config"))),
-            ),
-            AccountPostState::new(admin.account.clone()),
-        ]))
+        Ok(SpelOutput::execute(
+            vec![admin_authority, config, admin],
+            vec![],
+        ))
     }
 
     #[instruction]
     pub fn transfer_admin(
-        #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
+        #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
         new_admin: AdminKey,
     ) -> SpelResult {
@@ -91,54 +78,44 @@ mod admin_authority_sample {
             .transfer(&admin, new_admin)
             .map_err(admin_error_to_spel)?;
 
-        let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(&authority)?;
+        admin_authority.account.data = encode_admin(&authority)?;
 
-        Ok(SpelOutput::states_only(vec![
-            AccountPostState::new(admin_post),
-            AccountPostState::new(admin.account.clone()),
-        ]))
+        Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
     }
 
     #[instruction]
     pub fn revoke_admin(
-        #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
+        #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
     ) -> SpelResult {
         let mut authority = decode_admin(&admin_authority, 0)?;
         authority.revoke(&admin).map_err(admin_error_to_spel)?;
 
-        let mut admin_post = admin_authority.account.clone();
-        admin_post.data = encode_admin(&authority)?;
+        admin_authority.account.data = encode_admin(&authority)?;
 
-        Ok(SpelOutput::states_only(vec![
-            AccountPostState::new(admin_post),
-            AccountPostState::new(admin.account.clone()),
-        ]))
+        Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
     }
 
     #[instruction]
     pub fn update_config(
         #[account(pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
-        #[account(mut, pda = literal("config"))] config: AccountWithMetadata,
+        #[account(mut, pda = literal("config"))] mut config: AccountWithMetadata,
         #[account(admin)] admin: AccountWithMetadata,
         value: u64,
     ) -> SpelResult {
-        let mut config_post = config.account.clone();
-        config_post.data = encode_config(&Config { value })?;
+        config.account.data = encode_config(&Config { value })?;
 
-        Ok(SpelOutput::states_only(vec![
-            AccountPostState::new(admin_authority.account.clone()),
-            AccountPostState::new(config_post),
-            AccountPostState::new(admin.account.clone()),
-        ]))
+        Ok(SpelOutput::execute(
+            vec![admin_authority, config, admin],
+            vec![],
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nssa_core::account::{Account, Nonce};
+    use nssa_core::account::{Account, AccountId, Nonce};
 
     fn account_id(byte: u8) -> AccountId {
         AccountId::new([byte; 32])
