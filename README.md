@@ -6,7 +6,7 @@ A reusable admin authority library for [Logos Execution Zone](https://github.com
 
 ## What it does
 
-- Stores a single active admin (on-curve signer key or PDA) in an `AdminAuthority` account.
+- Stores a single active admin account id (`Signer` or `Pda`) in an `AdminAuthority` account.
 - Gates any SPEL instruction behind admin authority with one annotation: `#[account(admin)]`.
 - Provides `transfer` and `revoke` helpers that enforce the single-admin invariant and reject default/zero keys.
 - Revocation is permanent — once revoked, no further privileged calls are accepted.
@@ -42,22 +42,22 @@ Every program that uses admin authority needs an `admin_authority` PDA to hold t
 ```rust
 #[instruction]
 pub fn initialize(
-    #[account(init, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
+    #[account(init, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
     #[account(signer)] admin: AccountWithMetadata,
 ) -> SpelResult {
-    let mut post = admin_authority.account.clone();
-    post.data = AdminAuthority::new(AdminKey::Signer(admin.account_id))
-        .expect("admin key must be non-default")
-        .encode()
-        .expect("must fit in account data");
+    let authority =
+        AdminAuthority::new(AdminKey::Signer(admin.account_id)).map_err(|e| {
+            SpelError::Unauthorized {
+                message: e.to_string(),
+            }
+        })?;
 
-    Ok(SpelOutput::states_only(vec![
-        AccountPostState::new_claimed(
-            post,
-            Claim::Pda(PdaSeed::new(seed_from_str("admin_authority"))),
-        ),
-        AccountPostState::new(admin.account.clone()),
-    ]))
+    admin_authority.account.data =
+        authority.encode().map_err(|e| SpelError::SerializationError {
+            message: format!("admin authority encode failed: {e}"),
+        })?;
+
+    Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
 }
 ```
 
@@ -69,18 +69,13 @@ Add `#[account(admin)]` to any instruction that must be restricted to the curren
 #[instruction]
 pub fn update_config(
     #[account(pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
-    #[account(mut, pda = literal("config"))]    config: AccountWithMetadata,
+    #[account(mut, pda = literal("config"))]    mut config: AccountWithMetadata,
     #[account(admin)]                           admin: AccountWithMetadata,
     value: u64,
 ) -> SpelResult {
-    let mut post = config.account.clone();
-    post.data = encode_config(&Config { value });
+    config.account.data = encode_config(&Config { value })?;
 
-    Ok(SpelOutput::states_only(vec![
-        AccountPostState::new(admin_authority.account.clone()),
-        AccountPostState::new(post),
-        AccountPostState::new(admin.account.clone()),
-    ]))
+    Ok(SpelOutput::execute(vec![admin_authority, config, admin], vec![]))
 }
 ```
 
@@ -95,41 +90,49 @@ use admin_authority::{AdminAuthority, AdminKey};
 
 #[instruction]
 pub fn transfer_admin(
-    #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
+    #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
     #[account(admin)] admin: AccountWithMetadata,
     new_admin: AdminKey, // AdminKey::Signer(id) or AdminKey::Pda(id)
 ) -> SpelResult {
     let mut authority = AdminAuthority::from_account(&admin_authority)
-        .expect("admin authority must decode");
+        .map_err(|e| SpelError::DeserializationError {
+            account_index: 0,
+            message: format!("admin authority decode failed: {e}"),
+        })?;
     authority
         .transfer(&admin, new_admin)
-        .expect("transfer must be authorized");
+        .map_err(|e| SpelError::Unauthorized {
+            message: e.to_string(),
+        })?;
 
-    let mut post = admin_authority.account.clone();
-    post.data = authority.encode().expect("must fit");
+    admin_authority.account.data =
+        authority.encode().map_err(|e| SpelError::SerializationError {
+            message: format!("admin authority encode failed: {e}"),
+        })?;
 
-    Ok(SpelOutput::states_only(vec![
-        AccountPostState::new(post),
-        AccountPostState::new(admin.account.clone()),
-    ]))
+    Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
 }
 
 #[instruction]
 pub fn revoke_admin(
-    #[account(mut, pda = literal("admin_authority"))] admin_authority: AccountWithMetadata,
+    #[account(mut, pda = literal("admin_authority"))] mut admin_authority: AccountWithMetadata,
     #[account(admin)] admin: AccountWithMetadata,
 ) -> SpelResult {
     let mut authority = AdminAuthority::from_account(&admin_authority)
-        .expect("admin authority must decode");
-    authority.revoke(&admin).expect("revoke must be authorized");
+        .map_err(|e| SpelError::DeserializationError {
+            account_index: 0,
+            message: format!("admin authority decode failed: {e}"),
+        })?;
+    authority.revoke(&admin).map_err(|e| SpelError::Unauthorized {
+        message: e.to_string(),
+    })?;
 
-    let mut post = admin_authority.account.clone();
-    post.data = authority.encode().expect("must fit");
+    admin_authority.account.data =
+        authority.encode().map_err(|e| SpelError::SerializationError {
+            message: format!("admin authority encode failed: {e}"),
+        })?;
 
-    Ok(SpelOutput::states_only(vec![
-        AccountPostState::new(post),
-        AccountPostState::new(admin.account.clone()),
-    ]))
+    Ok(SpelOutput::execute(vec![admin_authority, admin], vec![]))
 }
 ```
 
@@ -139,8 +142,12 @@ pub fn revoke_admin(
 # Unit and integration tests (no ZK proof generation)
 RISC0_DEV_MODE=1 cargo test --workspace
 
-# Format check
-cargo fmt --all -- --check
+# Format check scoped to this workspace's source files
+find admin-authority admin-authority-sample admin-authority-sample-methods integration-tests \
+  -name '*.rs' -print0 | xargs -0 rustfmt --edition 2024 --check
+
+# Clippy without rebuilding the RISC Zero guest ELF
+RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
 
 # Nix reproducible build check
 nix flake check
@@ -201,12 +208,12 @@ impl AdminAuthority {
 
 ```rust
 pub enum AdminKey {
-    Signer(AccountId), // on-curve keypair
-    Pda(AccountId),    // program-derived address
+    Signer(AccountId), // public signer account id
+    Pda(AccountId),    // program-derived account id
 }
 ```
 
-`AdminKey::validate()` rejects the default (all-zeros) `AccountId`.
+`AdminKey::validate()` rejects the default (all-zeros) `AccountId`. A stored signer is proven usable when it later authorizes a gated instruction; a stored PDA is proven usable when the runtime marks that PDA account as authorized.
 
 ### `AdminAuthorityError`
 
@@ -225,7 +232,8 @@ pub enum AdminKey {
 ```bash
 cargo check --workspace
 RISC0_DEV_MODE=1 cargo test --workspace
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+find admin-authority admin-authority-sample admin-authority-sample-methods integration-tests \
+  -name '*.rs' -print0 | xargs -0 rustfmt --edition 2024 --check
+RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
 nix flake check
 ```

@@ -14,8 +14,31 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spel-admin-authority
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: spel-admin-authority
+
+      - name: Checkout patched SPEL base
+        uses: actions/checkout@v4
+        with:
+          repository: logos-co/spel
+          ref: 3457c7431e9b5b88661ed87b53677511ef88d113
+          path: spel
+
+      - name: Apply SPEL admin-authority patch
+        working-directory: spel
+        run: git apply ../spel-admin-authority/patches/spel-admin-authority.patch
+
+      - name: Checkout Logos Execution Zone
+        uses: actions/checkout@v4
+        with:
+          repository: logos-blockchain/logos-execution-zone
+          ref: f37454ed1e730c7588b3980962011b687112d0ac
+          path: logos-execution-zone
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -28,15 +51,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            spel-admin-authority/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: |
+          find admin-authority admin-authority-sample admin-authority-sample-methods integration-tests \
+            -name '*.rs' -print0 | xargs -0 rustfmt --edition 2024 --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Unit and integration tests
         run: cargo test --workspace

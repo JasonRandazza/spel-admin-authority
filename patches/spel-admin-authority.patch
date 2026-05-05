@@ -1,0 +1,280 @@
+diff --git a/spel-client-gen/src/tests.rs b/spel-client-gen/src/tests.rs
+index 5b99413..c4eaad6 100644
+--- a/spel-client-gen/src/tests.rs
++++ b/spel-client-gen/src/tests.rs
+@@ -215,6 +215,7 @@ fn test_pda_helpers_single_arg_seed() {
+                 name: "multisig_state".to_string(),
+                 writable: true,
+                 signer: false,
++                admin: false,
+                 init: true,
+                 owner: None,
+                 pda: Some(IdlPda {
+@@ -270,6 +271,7 @@ fn test_pda_helpers_multi_seed() {
+                 name: "multisig_state".to_string(),
+                 writable: true,
+                 signer: false,
++                admin: false,
+                 init: true,
+                 owner: None,
+                 pda: Some(IdlPda {
+@@ -326,6 +328,7 @@ fn test_pda_helpers_deduplication() {
+             name: "shared_state".to_string(),
+             writable: true,
+             signer: false,
++            admin: false,
+             init: false,
+             owner: None,
+             pda: Some(IdlPda {
+@@ -397,6 +400,7 @@ fn test_pda_helpers_u64_single_seed() {
+                 name: "proposal".to_string(),
+                 writable: true,
+                 signer: false,
++                admin: false,
+                 init: true,
+                 owner: None,
+                 pda: Some(IdlPda {
+@@ -450,6 +454,7 @@ fn test_pda_helpers_u64_multi_seed() {
+                 name: "proposal".to_string(),
+                 writable: true,
+                 signer: false,
++                admin: false,
+                 init: true,
+                 owner: None,
+                 pda: Some(IdlPda {
+diff --git a/spel-framework-core/src/idl.rs b/spel-framework-core/src/idl.rs
+index 9ae965c..32a2cba 100644
+--- a/spel-framework-core/src/idl.rs
++++ b/spel-framework-core/src/idl.rs
+@@ -81,6 +81,8 @@ pub struct IdlAccountItem {
+     pub writable: bool,
+     #[serde(default)]
+     pub signer: bool,
++    #[serde(default, skip_serializing_if = "is_false")]
++    pub admin: bool,
+     #[serde(default)]
+     pub init: bool,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+diff --git a/spel-framework-core/src/idl_gen.rs b/spel-framework-core/src/idl_gen.rs
+index ac01bb0..b4dcd7c 100644
+--- a/spel-framework-core/src/idl_gen.rs
++++ b/spel-framework-core/src/idl_gen.rs
+@@ -155,6 +155,7 @@ fn generate_idl_from_str(content: &str, source_label: &str) -> Result<SpelIdl, I
+                         name: acc.name.to_string(),
+                         writable: acc.constraints.mutable,
+                         signer: acc.constraints.signer,
++                        admin: acc.constraints.admin,
+                         init: acc.constraints.init,
+                         owner: None,
+                         pda,
+@@ -218,6 +219,7 @@ struct AccountConstraints {
+     mutable: bool,
+     init: bool,
+     signer: bool,
++    admin: bool,
+     pda_seeds: Vec<PdaSeedDef>,
+ }
+ 
+@@ -335,6 +337,9 @@ fn parse_account_constraints(attrs: &[Attribute]) -> Result<AccountConstraints,
+                 } else if meta.path.is_ident("signer") {
+                     constraints.signer = true;
+                     Ok(())
++                } else if meta.path.is_ident("admin") {
++                    constraints.admin = true;
++                    Ok(())
+                 } else if meta.path.is_ident("owner") {
+                     let value = meta.value()?;
+                     let _expr: syn::Expr = value.parse()?;
+diff --git a/spel-framework-core/src/pda.rs b/spel-framework-core/src/pda.rs
+index 1c9e9c1..a1876ca 100644
+--- a/spel-framework-core/src/pda.rs
++++ b/spel-framework-core/src/pda.rs
+@@ -84,7 +84,7 @@ pub fn compute_pda(program_id: &ProgramId, seeds: &[&[u8; 32]]) -> AccountId {
+     };
+ 
+     let pda_seed = PdaSeed::new(combined);
+-    AccountId::from((program_id, &pda_seed))
++    AccountId::for_public_pda(program_id, &pda_seed)
+ }
+ 
+ /// Compute a PDA from a program ID and multiple [`ToSeed`] values.
+diff --git a/spel-framework-core/src/types.rs b/spel-framework-core/src/types.rs
+index b238459..1549789 100644
+--- a/spel-framework-core/src/types.rs
++++ b/spel-framework-core/src/types.rs
+@@ -63,6 +63,7 @@ pub struct AccountConstraint {
+     pub init: bool,
+     pub owner: Option<[u8; 32]>,
+     pub signer: bool,
++    pub admin: bool,
+     pub seeds: Option<Vec<Vec<u8>>>,
+ }
+ 
+@@ -82,6 +83,7 @@ pub struct AccountMeta {
+     pub init: bool,
+     pub owner: Option<String>,
+     pub signer: bool,
++    pub admin: bool,
+     pub pda_seeds: Option<Vec<String>>,
+ }
+ 
+diff --git a/spel-framework-core/tests/variable_accounts.rs b/spel-framework-core/tests/variable_accounts.rs
+index 600e28f..626d077 100644
+--- a/spel-framework-core/tests/variable_accounts.rs
++++ b/spel-framework-core/tests/variable_accounts.rs
+@@ -9,6 +9,7 @@ fn test_rest_account_serializes() {
+         name: "members".to_string(),
+         writable: false,
+         signer: false,
++        admin: false,
+         init: false,
+         owner: None,
+         pda: None,
+@@ -25,6 +26,7 @@ fn test_non_rest_account_omits_rest() {
+         name: "state".to_string(),
+         writable: true,
+         signer: false,
++        admin: false,
+         init: false,
+         owner: None,
+         pda: None,
+diff --git a/spel-framework-macros/src/lib.rs b/spel-framework-macros/src/lib.rs
+index 017082d..04f9757 100644
+--- a/spel-framework-macros/src/lib.rs
++++ b/spel-framework-macros/src/lib.rs
+@@ -170,6 +170,7 @@ struct AccountConstraints {
+     init: bool,
+     owner: Option<syn::Expr>,
+     signer: bool,
++    admin: bool,
+     pda_seeds: Vec<PdaSeedDef>,
+ }
+ 
+@@ -465,6 +466,9 @@ fn parse_account_constraints(attrs: &[Attribute]) -> syn::Result<AccountConstrai
+                 } else if meta.path.is_ident("signer") {
+                     constraints.signer = true;
+                     Ok(())
++                } else if meta.path.is_ident("admin") {
++                    constraints.admin = true;
++                    Ok(())
+                 } else if meta.path.is_ident("owner") {
+                     let value = meta.value()?;
+                     let expr: syn::Expr = value.parse()?;
+@@ -642,7 +646,10 @@ fn generate_match_arms(mod_name: &Ident, instructions: &[InstructionInfo]) -> Ve
+ 
+             // Check if this instruction has any validation (signer/init/pda checks)
+             let has_validation = ix.accounts.iter().any(|a| {
+-                a.constraints.signer || a.constraints.init || !a.constraints.pda_seeds.is_empty()
++                a.constraints.signer
++                    || a.constraints.admin
++                    || a.constraints.init
++                    || !a.constraints.pda_seeds.is_empty()
+             });
+             let validate_fn_name = format_ident!("__validate_{}", ix.fn_name);
+ 
+@@ -1161,6 +1168,47 @@ fn generate_validation(instructions: &[InstructionInfo]) -> Vec<TokenStream2> {
+                 })
+                 .collect();
+ 
++            let admin_state_idx = ix
++                .accounts
++                .iter()
++                .position(|acc| acc.name == "admin_authority");
++
++            let admin_checks: Vec<TokenStream2> = ix
++                .accounts
++                .iter()
++                .enumerate()
++                .filter(|(_, acc)| acc.constraints.admin)
++                .map(|(i, acc)| {
++                    let acc_name = acc.name.to_string();
++                    let idx = i;
++                    let state_idx = admin_state_idx.unwrap_or_else(|| {
++                        panic!(
++                            "#[account(admin)] on '{}' requires an account named 'admin_authority'",
++                            acc_name
++                        )
++                    });
++                    quote! {
++                        if !accounts[#idx].is_authorized {
++                            return Err(spel_framework::error::SpelError::Unauthorized {
++                                message: format!("Admin account '{}' (index {}) must be authorized", #acc_name, #idx),
++                            });
++                        }
++
++                        let __admin_authority =
++                            admin_authority::AdminAuthority::from_account(&accounts[#state_idx])
++                                .map_err(|e| spel_framework::error::SpelError::Unauthorized {
++                                    message: format!("Admin authority validation failed: {}", e),
++                                })?;
++
++                        __admin_authority
++                            .assert_admin(&accounts[#idx])
++                            .map_err(|e| spel_framework::error::SpelError::Unauthorized {
++                                message: format!("Account '{}' (index {}) is not admin: {}", #acc_name, #idx, e),
++                            })?;
++                    }
++                })
++                .collect();
++
+             // Extra parameters for arg PDA seeds
+             let arg_seed_params = pda_arg_params(ix);
+ 
+@@ -1228,7 +1276,11 @@ fn generate_validation(instructions: &[InstructionInfo]) -> Vec<TokenStream2> {
+                 })
+                 .collect();
+ 
+-            if signer_checks.is_empty() && init_checks.is_empty() && pda_checks.is_empty() {
++            if signer_checks.is_empty()
++                && admin_checks.is_empty()
++                && init_checks.is_empty()
++                && pda_checks.is_empty()
++            {
+                 return quote! {};
+             }
+ 
+@@ -1243,6 +1295,7 @@ fn generate_validation(instructions: &[InstructionInfo]) -> Vec<TokenStream2> {
+                     #(#arg_seed_params),*
+                 ) -> Result<(), spel_framework::error::SpelError> {
+                     #(#signer_checks)*
++                    #(#admin_checks)*
+                     #(#init_checks)*
+                     #(#pda_checks)*
+                     Ok(())
+@@ -1416,6 +1469,7 @@ fn generate_idl_fn(mod_name: &Ident, instructions: &[InstructionInfo], external_
+                     let acc_name = acc.name.to_string().trim_start_matches('_').to_string();
+                     let writable = acc.constraints.mutable;
+                     let signer = acc.constraints.signer;
++                    let admin = acc.constraints.admin;
+                     let init = acc.constraints.init;
+ 
+                     let pda_expr = if acc.constraints.pda_seeds.is_empty() {
+@@ -1451,6 +1505,7 @@ fn generate_idl_fn(mod_name: &Ident, instructions: &[InstructionInfo], external_
+                             name: #acc_name.to_string(),
+                             writable: #writable,
+                             signer: #signer,
++                            admin: #admin,
+                             init: #init,
+                             owner: None,
+                             pda: #pda_expr,
+@@ -1554,6 +1609,7 @@ fn generate_idl_json(mod_name: &Ident, instructions: &[InstructionInfo], externa
+                     let name = acc.name.to_string();
+                     let writable = acc.constraints.mutable;
+                     let signer = acc.constraints.signer;
++                    let admin = acc.constraints.admin;
+                     let init = acc.constraints.init;
+ 
+                     let pda_json = if acc.constraints.pda_seeds.is_empty() {
+@@ -1579,9 +1635,10 @@ fn generate_idl_json(mod_name: &Ident, instructions: &[InstructionInfo], externa
+                     };
+ 
+                     let rest_json = if acc.is_rest { ",\"rest\":true".to_string() } else { String::new() };
++                    let admin_json = if admin { ",\"admin\":true".to_string() } else { String::new() };
+                     format!(
+-                        "{{\"name\":\"{}\",\"writable\":{},\"signer\":{},\"init\":{}{}{}}}",
+-                        name, writable, signer, init, pda_json, rest_json
++                        "{{\"name\":\"{}\",\"writable\":{},\"signer\":{},\"init\":{}{}{}{}}}",
++                        name, writable, signer, init, admin_json, pda_json, rest_json
+                     )
+                 })
+                 .collect();

@@ -57,7 +57,7 @@ Three proposals are open against RFP-001 (admin authority library). Anything we 
 - **`admin-authority-sample`** — sample SPEL program. Demonstrates the full flow (init / transfer / revoke / gated update_config). Uses `#[lez_program]` macro and `#[account(admin)]` annotation.
 - **`admin-authority-sample-methods`** — RISC Zero ELF wrapper. `risc0-build::embed_methods()` produces `ADMIN_AUTHORITY_SAMPLE_ELF: &[u8]` and `ADMIN_AUTHORITY_SAMPLE_ID: [u32; 8]` constants for tests/clients.
 - **`admin-authority-sample-methods/guest`** — explicit workspace member; thin binary wrapper calling `admin_authority_sample::main()`.
-- **`integration-tests`** — two test files: `admin_authority.rs` (LEZ-layer validator tests, 3 tests) and `v03state.rs` (end-to-end V03State tests, 4 tests).
+- **`integration-tests`** — two test files: `admin_authority.rs` (LEZ-layer validator tests, 3 tests) and `v03state.rs` (end-to-end V03State tests, 5 tests).
 
 ### SPEL Integration Pattern
 
@@ -74,6 +74,8 @@ The project depends on local SPEL changes that are not yet upstreamed:
 - `/home/jrazz/logos-bootcamp/spel/spel-framework-core/tests/variable_accounts.rs`
 - `/home/jrazz/logos-bootcamp/spel/spel-framework-macros/src/lib.rs` (recognises `#[account(admin)]`)
 - `/home/jrazz/logos-bootcamp/spel/spel-client-gen/src/tests.rs`
+
+This repo now carries the exact SPEL diff at `patches/spel-admin-authority.patch`. GitHub Actions checks out `logos-co/spel` at `3457c7431e9b5b88661ed87b53677511ef88d113`, applies that patch, and checks out `logos-blockchain/logos-execution-zone` at `f37454ed1e730c7588b3980962011b687112d0ac` so the path dependencies resolve in a fresh CI checkout.
 
 If SPEL upstream merges these (mmlado's #46 commits to a draft PR upstream), our `Cargo.toml` patch section can be dropped.
 
@@ -99,10 +101,10 @@ Cross-referenced against the RFP spec at `/home/jrazz/logos-bootcamp/RFP-001-adm
 | Only one admin at a time | Hard — Usability | `Option<AdminKey>` (single-valued) | enforced by type |
 | README + step-by-step integration + e2e example | Hard — Supportability | README.md (4-step guide, full code example) | manual review |
 | Transaction size overhead documented | Hard — Performance | README overhead table (+128 / +32 bytes) | — |
-| CI green on default branch | Hard — Supportability | `.github/workflows/ci.yml` (fmt + clippy + test) | runs on every push |
-| Every hard req has a test | Hard — Supportability | 20 tests (will become 23 after current work) | listed above |
+| CI green on default branch | Hard — Supportability | `.github/workflows/ci.yml` (scoped fmt + clippy + test with pinned SPEL/LEZ checkouts) | runs on every push |
+| Every hard req has a test | Hard — Supportability | 22 tests | listed above |
 | Sample program imports library | Hard — Supportability | `admin-authority-sample` depends on `admin-authority` | — |
-| Valid signer/PDA only | Soft — Reliability | `AdminKey::validate()` rejects default; `transfer_admin` takes `AdminKey` typed param | `transfer_rejects_invalid_new_admin` |
+| Valid signer/PDA only | Soft — Reliability | Partially covered: `AdminKey::validate()` rejects default and `#[account(admin)]` proves authorization when the stored key is exercised. Current `transfer_admin` does not prove future signer curve membership or PDA deployment at transfer time from `AccountId` alone. | `transfer_rejects_invalid_new_admin` + V03 invalid-transfer test |
 
 ---
 
@@ -110,12 +112,12 @@ Cross-referenced against the RFP spec at `/home/jrazz/logos-bootcamp/RFP-001-adm
 
 | Crate | File | Tests | Type |
 |---|---|---|---|
-| `admin-authority` | `src/lib.rs` (mod tests) | 6 → **9** (+3 added in current session) | Unit (core library) |
+| `admin-authority` | `src/lib.rs` (mod tests) | 9 | Unit (core library) |
 | `admin-authority-sample` | `src/lib.rs` (mod tests) | 5 | Unit (SPEL macro + IDL) |
 | `integration-tests` | `tests/admin_authority.rs` | 3 | LEZ validator layer |
-| `integration-tests` | `tests/v03state.rs` | 4 | E2E V03State (compiled ELF) |
+| `integration-tests` | `tests/v03state.rs` | 5 | E2E V03State (compiled ELF) |
 
-Total: **20 → 21 tests** (current session added 3 unit tests; the count below depends on whether the optional V03State failure-path test gets added).
+Total: **22 tests**.
 
 ---
 
@@ -135,64 +137,32 @@ In strict order:
 
 7. **Posted progress update on issue #50** (user did this manually) — comment maps every hard/soft RFP requirement to ✅ Complete, includes formal milestone table with deliverables/acceptance criteria/payment, links to repo with green CI.
 
+8. **Codex review pass (2026-05-05)**:
+   - Added real V03State post-transfer coverage: old admin can no longer update config; new admin can.
+   - Strengthened `v03state_revoke_admin_blocks_further_updates` so it actually submits a post-revoke `update_config` and expects rejection.
+   - Added `v03state_transfer_admin_rejects_invalid_new_admin`, confirming invalid default-key transfer returns an error and leaves authority unchanged.
+   - Reworked README examples to use `SpelError`/`?` instead of `.expect()` inside guest handlers and to use non-deprecated `SpelOutput::execute`.
+   - Fixed CI reproducibility by checking out pinned SPEL/LEZ siblings, applying `patches/spel-admin-authority.patch`, scoping rustfmt to this repo, and using `RISC0_SKIP_BUILD=1` for clippy.
+   - Corrected documentation that overclaimed on-curve/deployed-PDA validation. That remains the main known enhancement if the RFP reviewer treats the soft reliability item as mandatory.
+
 ---
 
 ## Active Work — DO THIS FIRST WHEN RESUMING
 
-A `cargo test --workspace` run was kicked off after the .expect() / consolidation fixes but its result has **not yet been verified by the agent writing this document**. The next steps depend on the test outcome:
-
-### Step 1 — Verify the test run
-
-Check the most recent test output. If all tests pass, proceed to Step 2. If any fail, fix them.
+There is no known failing code issue at this handoff. Before making new changes, confirm the current working tree and rerun the verification commands below if needed.
 
 ```bash
+cargo check --workspace
+find admin-authority admin-authority-sample admin-authority-sample-methods integration-tests \
+  -name '*.rs' -print0 | xargs -0 rustfmt --edition 2024 --check
+RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
 RISC0_DEV_MODE=1 cargo test --workspace
-```
-
-Expected: 21 tests passing (was 20; +3 new unit tests for `AdminKey::Pda`; no test was removed).
-
-**Watch for:** the consolidated `assert_admin` should not change behaviour but the test counts and assertions need to confirm. If `revoke_blocks_future_privileged_calls` fails, the consolidation has a bug.
-
-### Step 2 — (Optional but recommended) Add a V03State failure-path test
-
-This is **not RFP-required** but strengthens the proposal: confirms the LEZ rejects bad input gracefully (now that handlers return `SpelError` instead of panicking).
-
-```rust
-#[test]
-fn v03state_transfer_admin_rejects_invalid_new_admin() {
-    let (mut state, admin_key, admin_id) = initialized_state();
-    let invalid = Message::try_new(
-        ADMIN_AUTHORITY_SAMPLE_ID,
-        vec![pda("admin_authority"), admin_id],
-        vec![Nonce(1)],
-        Instruction::TransferAdmin {
-            new_admin: AdminKey::Signer(AccountId::default()),
-        },
-    ).unwrap();
-    // Expect the V03State transition to error, not panic.
-    let result = state.transition_from_public_transaction(
-        &PublicTransaction::new(
-            invalid.clone(),
-            WitnessSet::for_message(&invalid, &[&admin_key]),
-        ), 2, 0,
-    );
-    assert!(result.is_err());
-}
-```
-
-**Caveat:** the exact error returned by `V03State::transition_from_public_transaction` when a SPEL handler returns `Err(SpelError)` may need investigation — it might be wrapped, surface as a generic transaction-failed error, or panic out of the guest depending on how risc0/V03State surface guest errors. **If unsure, run the test and inspect the error variant before asserting on it.**
-
-### Step 3 — Run final checks
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
 nix flake check
 ```
 
-If `nix flake check` fails on formatting (it has a separate sandboxed `rustfmt` that can disagree with the local one when there's a parent `rustfmt.toml`), run `rustfmt --edition 2024` directly on the changed files first. See git history (commit `f00d8fe`) for an example of this issue.
+Local note: in the Codex sandbox, V03State/RISC Zero execution failed with `Operation not permitted`; running the same `RISC0_DEV_MODE=1 cargo test --workspace` outside the sandbox passed.
 
-### Step 4 — Commit and push
+### Commit and push
 
 The user has authorised commits and pushes for finished, verified work. Suggested commit message structure: lead with the bug-fix (handler panics), then the dedupe, then the new tests. Use `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`.
 
